@@ -50,6 +50,12 @@ curl -fsSL https://raw.githubusercontent.com/lizzyman04/vps-bootstrap/main/conne
 optionally a local SSH **public** key to install. It then opens an SSH session
 and runs `setup.sh` on the server for you.
 
+When the remote setup finishes successfully, `connect.sh` can also add a
+convenience **SSH alias** to your local `~/.ssh/config` — so next time you just
+run `ssh <alias>` instead of the full command. It suggests a name (e.g.
+`vps-<last-octet>`), fills in the host, admin user, identity file, and port,
+and never duplicates or overwrites an existing entry.
+
 > [!IMPORTANT]
 > **Your server password is handled by SSH — never by this project.**
 > `connect.sh` does **not** read, store, pass, or echo your password. There is

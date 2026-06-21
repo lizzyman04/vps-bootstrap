@@ -75,6 +75,102 @@ valid_ssh_key() {
   esac
 }
 
+alias_exists() {
+  # $1 = alias name, $2 = config path. Returns 0 if a `Host` line already
+  # declares this exact alias (a Host line may list several patterns).
+  local name="$1" cfg="$2" line rest tok
+  [ -f "$cfg" ] || return 1
+  while IFS= read -r line; do
+    line="${line#"${line%%[![:space:]]*}"}"   # strip leading whitespace
+    case "$line" in
+      [Hh][Oo][Ss][Tt][[:space:]]*)
+        rest="${line#[Hh][Oo][Ss][Tt]}"
+        set -f                                  # no globbing on '*' patterns
+        for tok in $rest; do
+          [ "$tok" = "$name" ] && { set +f; return 0; }
+        done
+        set +f
+        ;;
+    esac
+  done < "$cfg"
+  return 1
+}
+
+offer_alias() {
+  # Offer to write a convenience Host block to ~/.ssh/config. Called ONLY after
+  # the remote setup returned successfully. Never touches the password.
+  local cfg="$HOME/.ssh/config" alias_name admin_user id_key ssh_port default_alias default_key
+
+  confirm "Add an SSH alias to $cfg so you can log in with 'ssh <name>'?" || {
+    log "Skipping the SSH alias."
+    return 0
+  }
+
+  # Default alias derived from the IPv4 last octet (generic for IPv6).
+  default_alias="vps"
+  case "$SERVER_IP" in
+    *:*) : ;;
+    *)   default_alias="vps-${SERVER_IP##*.}" ;;
+  esac
+
+  while true; do
+    alias_name="$(ask "Alias name" "$default_alias")"
+    [ -z "$alias_name" ] && { warn "Alias name cannot be empty."; continue; }
+    case "$alias_name" in *[[:space:]]*) warn "Alias name cannot contain spaces."; continue ;; esac
+    if alias_exists "$alias_name" "$cfg"; then
+      warn "Host '$alias_name' already exists in $cfg — not duplicating it."
+      confirm "Pick a different name?" && continue
+      log "Leaving $cfg untouched; no alias added."
+      return 0
+    fi
+    break
+  done
+
+  # connect.sh only knows the SSH *connect* user; the new admin name was
+  # collected by the remote wizard, so ask (defaulting to the connect user).
+  admin_user="$(ask "Username for the alias (the admin user setup.sh created)" "$SSH_USER")"
+
+  # Default private key = the installed public key minus its .pub suffix.
+  default_key=""
+  if [ -n "${PUBKEY_PATH:-}" ]; then
+    case "$PUBKEY_PATH" in
+      *.pub) [ -f "${PUBKEY_PATH%.pub}" ] && default_key="${PUBKEY_PATH%.pub}" ;;
+    esac
+  fi
+  id_key="$(ask "Local private key path for this host (empty to let SSH choose)" "$default_key")"
+
+  while true; do
+    ssh_port="$(ask "SSH port for this host" "22")"
+    case "$ssh_port" in
+      ''|*[!0-9]*) warn "Port must be a number." ;;
+      *) break ;;
+    esac
+  done
+
+  # Create ~/.ssh and the config with safe perms if needed.
+  install -d -m 700 "$HOME/.ssh"
+  if [ ! -f "$cfg" ]; then
+    : > "$cfg"
+    chmod 600 "$cfg"
+  fi
+
+  # Append cleanly: guarantee a trailing newline, then a blank-line separator.
+  if [ -s "$cfg" ]; then
+    [ -n "$(tail -c1 "$cfg" 2>/dev/null)" ] && printf '\n' >> "$cfg"
+    printf '\n' >> "$cfg"
+  fi
+  {
+    printf 'Host %s\n' "$alias_name"
+    printf '    HostName %s\n' "$SERVER_IP"
+    printf '    User %s\n' "$admin_user"
+    [ -n "$id_key" ] && printf '    IdentityFile %s\n' "$id_key"
+    printf '    Port %s\n' "$ssh_port"
+  } >> "$cfg"
+
+  log "Added SSH alias to $cfg."
+  log "You can now connect with:  ssh $alias_name"
+}
+
 [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ] && { sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; exit 0; }
 
 command -v ssh >/dev/null 2>&1 || die "ssh is not installed on this machine. Install OpenSSH client first."
@@ -160,4 +256,17 @@ EOF
 confirm "Proceed?" || die "Aborted by user."
 
 log "Connecting... (enter the server password at SSH's prompt)"
-exec ssh -t "$SSH_USER@$SERVER_IP" "$REMOTE_CMD"
+
+# Run the remote setup. Capture the exit code instead of exec'ing, so we can
+# offer the local SSH alias only if the setup actually succeeded.
+set +e
+ssh -t "$SSH_USER@$SERVER_IP" "$REMOTE_CMD"
+SSH_RC=$?
+set -e
+
+if [ "$SSH_RC" -ne 0 ]; then
+  die "Remote setup did not complete (ssh exited $SSH_RC). Not adding a local alias."
+fi
+
+log "Remote setup finished successfully."
+offer_alias

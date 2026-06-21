@@ -37,8 +37,47 @@ It encodes those lessons so you don't repeat them:
 
 ## Usage
 
+You can run it straight from GitHub — no clone required.
+
+### Recommended: download, then run
+
+Download the script, **read it**, then run it. This is the safest path and the
+interactive wizard works reliably:
+
 ```bash
-sudo ./vps-setup.sh \
+curl -fsSL https://raw.githubusercontent.com/lizzyman04/vps-bootstrap/main/setup.sh -o setup.sh
+sudo bash setup.sh
+```
+
+### One-liner (pipe)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/lizzyman04/vps-bootstrap/main/setup.sh | sudo bash
+```
+
+The wizard still works when piped — every prompt reads from `/dev/tty`, so the
+pipe consuming stdin doesn't break interactivity.
+
+> **Security note:** never pipe a script from the internet straight into a root
+> shell without reading it first. Download it, skim what it does, *then* run it
+> as root. The recommended two-step above lets you do exactly that.
+
+### Interactive first-run wizard
+
+With no flags, the script walks you through every setting one at a time, showing
+a sensible `[default]` in brackets — admin user, SSH key (paste the key or give
+a path to a `.pub` file), SSH port, password/root-login hardening, fail2ban,
+firewall, Docker, system upgrade, extra ports, and a fail2ban exempt IP. It then
+prints a summary of your choices and asks for one final confirmation before
+changing anything.
+
+### Non-interactive (power users)
+
+Pass `--yes` to skip the wizard and drive everything from flags/defaults. Any
+flag also overrides its matching prompt, so you can mix flags with the wizard:
+
+```bash
+sudo bash setup.sh \
   --user lizzyman04 \
   --ssh-key-file ~/.ssh/id_ed25519.pub \
   --extra-ports "80,443" \
@@ -46,15 +85,11 @@ sudo ./vps-setup.sh \
   --yes
 ```
 
-Run `sudo ./vps-setup.sh --help` for all options.
+Run `sudo bash setup.sh --help` for all options.
 
-### Recommended first run (interactive, safest)
+### After it finishes
 
-```bash
-sudo ./vps-setup.sh --user NAME --ssh-key "ssh-ed25519 AAAA... you@host"
-```
-
-Then, **before logging out**, open a new terminal and confirm:
+**Before logging out**, open a new terminal and confirm:
 
 ```bash
 ssh NAME@<server-ip>

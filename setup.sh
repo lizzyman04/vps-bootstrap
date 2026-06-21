@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# vps-setup.sh — A script to execute common setup tasks on a newly created VPS.
+# setup.sh — A script to execute common setup tasks on a newly created VPS.
 #
 # Multi-distro (Debian/Ubuntu, RHEL/Rocky/Alma/Fedora). Idempotent where possible.
 # Creates an admin user with an SSH key, hardens SSH (key-only, no root login),
@@ -19,9 +19,14 @@
 #     to disable passwords if no key is present (prevents lockout).
 #
 # Usage:
-#   sudo ./vps-setup.sh --user NAME --ssh-key "ssh-ed25519 AAAA... comment"
+#   sudo bash setup.sh                     # interactive first-run wizard
+#   sudo bash setup.sh --user NAME --ssh-key "ssh-ed25519 AAAA... comment" --yes
 #
-# Run `sudo ./vps-setup.sh --help` for all options.
+# On first run with no flags it walks you through every setting interactively
+# (with sensible defaults). Flags override the matching prompt; --yes skips the
+# wizard entirely for fully non-interactive runs.
+#
+# Run `sudo bash setup.sh --help` for all options.
 #
 set -euo pipefail
 
@@ -41,6 +46,21 @@ EXTRA_TCP_PORTS=""            # e.g. "80,443"
 IGNORE_IP=""                  # CIDR/IP allowed to bypass fail2ban (your admin IP)
 ASSUME_YES="no"
 
+# Track which values were supplied via flags. The interactive wizard only
+# prompts for values that were NOT set on the command line — so flags always
+# override / skip the matching prompt.
+ADMIN_USER_SET="no"
+SSH_PUBKEY_SET="no"
+SSH_PORT_SET="no"
+DISABLE_PASSWORD_AUTH_SET="no"
+DISABLE_ROOT_LOGIN_SET="no"
+INSTALL_FAIL2BAN_SET="no"
+INSTALL_FIREWALL_SET="no"
+INSTALL_DOCKER_SET="no"
+DO_UPGRADE_SET="no"
+EXTRA_TCP_PORTS_SET="no"
+IGNORE_IP_SET="no"
+
 LOG_PREFIX="[vps-setup]"
 
 # ---------------------------------------------------------------------------
@@ -52,9 +72,13 @@ die()  { printf '%s ERROR: %s\n' "$LOG_PREFIX" "$*" >&2; exit 1; }
 
 usage() {
   cat <<'EOF'
-vps-setup.sh — common setup tasks for a freshly created VPS (multi-distro)
+setup.sh — common setup tasks for a freshly created VPS (multi-distro)
 
-REQUIRED:
+Run with NO flags for an interactive first-run wizard that prompts for every
+value (with defaults). Any flag you pass overrides / skips its prompt. Pass
+--yes for a fully non-interactive run driven entirely by flags/defaults.
+
+REQUIRED (when using --yes; otherwise the wizard asks):
   --user NAME              Admin (sudo) user to create.
   --ssh-key "KEY"          Public SSH key to install for that user.
                            (or --ssh-key-file PATH to read it from a file)
@@ -73,7 +97,7 @@ OPTIONAL:
   --help                   Show this help.
 
 EXAMPLE:
-  sudo ./vps-setup.sh \
+  sudo bash setup.sh \
     --user lizzyman04 \
     --ssh-key-file ~/.ssh/id_ed25519.pub \
     --extra-ports "80,443" \
@@ -90,22 +114,86 @@ confirm() {
 }
 
 # ---------------------------------------------------------------------------
+# Interactive wizard helpers
+#
+# All reads come from /dev/tty (NOT stdin) so the prompts work even when the
+# script is piped, e.g. `curl ... | sudo bash`. The prompt text is written to
+# stderr so command substitution `$(ask ...)` captures only the answer.
+# ---------------------------------------------------------------------------
+ask() {
+  # $1 = prompt, $2 = default (may be empty). Echoes the chosen value.
+  local prompt="$1" def="${2:-}" reply
+  if [ -n "$def" ]; then
+    read -r -p "$LOG_PREFIX $prompt [$def]: " reply </dev/tty || true
+    printf '%s' "${reply:-$def}"
+  else
+    read -r -p "$LOG_PREFIX $prompt: " reply </dev/tty || true
+    printf '%s' "$reply"
+  fi
+}
+
+ask_yn() {
+  # $1 = prompt, $2 = default (yes|no). Echoes "yes" or "no".
+  local prompt="$1" def="$2" reply hint
+  case "$def" in yes) hint="Y/n" ;; *) hint="y/N" ;; esac
+  read -r -p "$LOG_PREFIX $prompt [$hint]: " reply </dev/tty || true
+  reply="${reply:-$def}"
+  case "$reply" in [yY]|[yY][eE][sS]) printf 'yes' ;; *) printf 'no' ;; esac
+}
+
+run_wizard() {
+  # Skip entirely in non-interactive mode.
+  [ "$ASSUME_YES" = "yes" ] && return 0
+
+  log "First-run setup wizard — press Enter to accept the [default] shown."
+  log "(Pass flags + --yes to skip this and run non-interactively.)"
+
+  if [ "$ADMIN_USER_SET" = "no" ]; then
+    while [ -z "$ADMIN_USER" ]; do
+      ADMIN_USER="$(ask "Admin (sudo) username to create (required)" "")"
+      [ -z "$ADMIN_USER" ] && warn "Username cannot be empty."
+    done
+  fi
+
+  if [ "$SSH_PUBKEY_SET" = "no" ]; then
+    local keyin
+    keyin="$(ask "SSH public key — full 'ssh-...' string OR path to a .pub file" "")"
+    if [ -n "$keyin" ] && [ -f "$keyin" ]; then
+      SSH_PUBKEY="$(cat "$keyin")"
+      log "Read SSH key from file: $keyin"
+    else
+      SSH_PUBKEY="$keyin"
+    fi
+  fi
+
+  [ "$SSH_PORT_SET" = "no" ]              && SSH_PORT="$(ask "SSH port" "$SSH_PORT")"
+  [ "$DISABLE_PASSWORD_AUTH_SET" = "no" ] && DISABLE_PASSWORD_AUTH="$(ask_yn "Disable password authentication (key-only SSH)?" "$DISABLE_PASSWORD_AUTH")"
+  [ "$DISABLE_ROOT_LOGIN_SET" = "no" ]    && DISABLE_ROOT_LOGIN="$(ask_yn "Disable direct root SSH login?" "$DISABLE_ROOT_LOGIN")"
+  [ "$INSTALL_FAIL2BAN_SET" = "no" ]      && INSTALL_FAIL2BAN="$(ask_yn "Install and configure fail2ban?" "$INSTALL_FAIL2BAN")"
+  [ "$INSTALL_FIREWALL_SET" = "no" ]      && INSTALL_FIREWALL="$(ask_yn "Configure a firewall (ufw/firewalld)?" "$INSTALL_FIREWALL")"
+  [ "$INSTALL_DOCKER_SET" = "no" ]        && INSTALL_DOCKER="$(ask_yn "Install Docker Engine?" "$INSTALL_DOCKER")"
+  [ "$DO_UPGRADE_SET" = "no" ]            && DO_UPGRADE="$(ask_yn "Upgrade all system packages now?" "$DO_UPGRADE")"
+  [ "$EXTRA_TCP_PORTS_SET" = "no" ]       && EXTRA_TCP_PORTS="$(ask "Extra TCP ports to open (comma-separated, e.g. 80,443)" "$EXTRA_TCP_PORTS")"
+  [ "$IGNORE_IP_SET" = "no" ]             && IGNORE_IP="$(ask "Admin IP/CIDR to exempt from fail2ban (optional)" "$IGNORE_IP")"
+}
+
+# ---------------------------------------------------------------------------
 # Argument parsing
 # ---------------------------------------------------------------------------
 while [ $# -gt 0 ]; do
   case "$1" in
-    --user)               ADMIN_USER="$2"; shift 2 ;;
-    --ssh-key)            SSH_PUBKEY="$2"; shift 2 ;;
-    --ssh-key-file)       SSH_PUBKEY="$(cat "$2")"; shift 2 ;;
-    --ssh-port)           SSH_PORT="$2"; shift 2 ;;
-    --extra-ports)        EXTRA_TCP_PORTS="$2"; shift 2 ;;
-    --ignore-ip)          IGNORE_IP="$2"; shift 2 ;;
-    --no-disable-password) DISABLE_PASSWORD_AUTH="no"; shift ;;
-    --no-disable-root)    DISABLE_ROOT_LOGIN="no"; shift ;;
-    --no-fail2ban)        INSTALL_FAIL2BAN="no"; shift ;;
-    --no-firewall)        INSTALL_FIREWALL="no"; shift ;;
-    --no-upgrade)         DO_UPGRADE="no"; shift ;;
-    --with-docker)        INSTALL_DOCKER="yes"; shift ;;
+    --user)               ADMIN_USER="$2"; ADMIN_USER_SET="yes"; shift 2 ;;
+    --ssh-key)            SSH_PUBKEY="$2"; SSH_PUBKEY_SET="yes"; shift 2 ;;
+    --ssh-key-file)       SSH_PUBKEY="$(cat "$2")"; SSH_PUBKEY_SET="yes"; shift 2 ;;
+    --ssh-port)           SSH_PORT="$2"; SSH_PORT_SET="yes"; shift 2 ;;
+    --extra-ports)        EXTRA_TCP_PORTS="$2"; EXTRA_TCP_PORTS_SET="yes"; shift 2 ;;
+    --ignore-ip)          IGNORE_IP="$2"; IGNORE_IP_SET="yes"; shift 2 ;;
+    --no-disable-password) DISABLE_PASSWORD_AUTH="no"; DISABLE_PASSWORD_AUTH_SET="yes"; shift ;;
+    --no-disable-root)    DISABLE_ROOT_LOGIN="no"; DISABLE_ROOT_LOGIN_SET="yes"; shift ;;
+    --no-fail2ban)        INSTALL_FAIL2BAN="no"; INSTALL_FAIL2BAN_SET="yes"; shift ;;
+    --no-firewall)        INSTALL_FIREWALL="no"; INSTALL_FIREWALL_SET="yes"; shift ;;
+    --no-upgrade)         DO_UPGRADE="no"; DO_UPGRADE_SET="yes"; shift ;;
+    --with-docker)        INSTALL_DOCKER="yes"; INSTALL_DOCKER_SET="yes"; shift ;;
     --yes)                ASSUME_YES="yes"; shift ;;
     --help|-h)            usage; exit 0 ;;
     *) die "Unknown option: $1 (use --help)" ;;
@@ -113,14 +201,21 @@ while [ $# -gt 0 ]; do
 done
 
 # ---------------------------------------------------------------------------
+# Interactive first-run wizard (prompts for anything not supplied via flags).
+# Runs before pre-flight so the wizard can satisfy required values. Skipped
+# entirely when --yes is given.
+# ---------------------------------------------------------------------------
+run_wizard
+
+# ---------------------------------------------------------------------------
 # Pre-flight checks
 # ---------------------------------------------------------------------------
 [ "$(id -u)" -eq 0 ] || die "Run as root (use sudo)."
-[ -n "$ADMIN_USER" ] || die "--user is required."
+[ -n "$ADMIN_USER" ] || die "Admin user is required (use --user NAME or the wizard)."
 
 # A key is mandatory unless you explicitly keep password auth on.
 if [ -z "$SSH_PUBKEY" ] && [ "$DISABLE_PASSWORD_AUTH" = "yes" ]; then
-  die "No SSH key given but password auth would be disabled — that locks you out. Provide --ssh-key/--ssh-key-file or pass --no-disable-password."
+  die "No SSH key given but password auth would be disabled — that locks you out. Provide a key (--ssh-key/--ssh-key-file or the wizard) or keep passwords on (--no-disable-password)."
 fi
 if [ -n "$SSH_PUBKEY" ]; then
   case "$SSH_PUBKEY" in
@@ -288,7 +383,7 @@ step_harden_ssh() {
 
   install -d /etc/ssh/sshd_config.d 2>/dev/null || true
   {
-    echo "# Managed by vps-setup.sh"
+    echo "# Managed by setup.sh"
     echo "Port ${SSH_PORT}"
     echo "PubkeyAuthentication yes"
     [ "$DISABLE_PASSWORD_AUTH" = "yes" ] && echo "PasswordAuthentication no"
@@ -367,6 +462,7 @@ main() {
 
   log "About to configure this VPS with:"
   log "  admin user        : $ADMIN_USER"
+  log "  ssh key           : ${SSH_PUBKEY:+provided}${SSH_PUBKEY:-none}"
   log "  ssh port          : $SSH_PORT"
   log "  disable passwords : $DISABLE_PASSWORD_AUTH"
   log "  disable root login: $DISABLE_ROOT_LOGIN"

@@ -113,6 +113,14 @@ confirm() {
   case "$reply" in [yY]|[yY][eE][sS]) return 0 ;; *) return 1 ;; esac
 }
 
+valid_ssh_key() {
+  # $1 = key string. Returns 0 if it looks like a supported public key.
+  case "$1" in
+    ssh-ed25519\ *|ssh-rsa\ *|ecdsa-sha2-*\ *|sk-*\ *) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # ---------------------------------------------------------------------------
 # Interactive wizard helpers
 #
@@ -134,11 +142,19 @@ ask() {
 
 ask_yn() {
   # $1 = prompt, $2 = default (yes|no). Echoes "yes" or "no".
+  # Empty input takes the default; a clear y/n is honored; ANY other input
+  # re-prompts. Never silently coerces an unrecognized answer to "no".
   local prompt="$1" def="$2" reply hint
   case "$def" in yes) hint="Y/n" ;; *) hint="y/N" ;; esac
-  read -r -p "$LOG_PREFIX $prompt [$hint]: " reply </dev/tty || true
-  reply="${reply:-$def}"
-  case "$reply" in [yY]|[yY][eE][sS]) printf 'yes' ;; *) printf 'no' ;; esac
+  while true; do
+    read -r -p "$LOG_PREFIX $prompt [$hint]: " reply </dev/tty || true
+    reply="${reply:-$def}"
+    case "$reply" in
+      [yY]|[yY][eE][sS]) printf 'yes'; return 0 ;;
+      [nN]|[nN][oO])     printf 'no';  return 0 ;;
+      *) warn "Please answer 'y' or 'n' (or press Enter for the default)." ;;
+    esac
+  done
 }
 
 run_wizard() {
@@ -164,13 +180,24 @@ run_wizard() {
 
   if [ "$SSH_PUBKEY_SET" = "no" ]; then
     local keyin
-    keyin="$(ask "SSH public key — full 'ssh-...' string OR path to a .pub file" "")"
-    if [ -n "$keyin" ] && [ -f "$keyin" ]; then
-      SSH_PUBKEY="$(cat "$keyin")"
-      log "Read SSH key from file: $keyin"
-    else
-      SSH_PUBKEY="$keyin"
-    fi
+    while true; do
+      keyin="$(ask "SSH public key — full 'ssh-...' string OR path to a .pub file" "")"
+      if [ -n "$keyin" ] && [ -f "$keyin" ]; then
+        keyin="$(cat "$keyin")"
+        log "Read SSH key from file."
+      fi
+      # Empty is allowed here; the pre-flight check enforces the
+      # key-required-unless-passwords-stay-on rule.
+      if [ -z "$keyin" ]; then
+        SSH_PUBKEY=""
+        break
+      fi
+      if valid_ssh_key "$keyin"; then
+        SSH_PUBKEY="$keyin"
+        break
+      fi
+      warn "SSH key doesn't look valid (must start with ssh-ed25519/ssh-rsa/ecdsa-sha2-/sk-...). Try again."
+    done
   fi
 
   [ "$SSH_PORT_SET" = "no" ]              && SSH_PORT="$(ask "SSH port" "$SSH_PORT")"
@@ -224,11 +251,8 @@ run_wizard
 if [ -z "$SSH_PUBKEY" ] && [ "$DISABLE_PASSWORD_AUTH" = "yes" ]; then
   die "No SSH key given but password auth would be disabled — that locks you out. Provide a key (--ssh-key/--ssh-key-file or the wizard) or keep passwords on (--no-disable-password)."
 fi
-if [ -n "$SSH_PUBKEY" ]; then
-  case "$SSH_PUBKEY" in
-    ssh-ed25519\ *|ssh-rsa\ *|ecdsa-sha2-*\ *|sk-*\ *) : ;;
-    *) die "SSH key doesn't look valid (must start with ssh-ed25519/ssh-rsa/ecdsa/sk-...)." ;;
-  esac
+if [ -n "$SSH_PUBKEY" ] && ! valid_ssh_key "$SSH_PUBKEY"; then
+  die "SSH key doesn't look valid (must start with ssh-ed25519/ssh-rsa/ecdsa/sk-...)."
 fi
 
 # ---------------------------------------------------------------------------

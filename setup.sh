@@ -145,6 +145,13 @@ run_wizard() {
   # Skip entirely in non-interactive mode.
   [ "$ASSUME_YES" = "yes" ] && return 0
 
+  # The wizard reads from /dev/tty. If there is no controlling terminal
+  # (e.g. cron, CI, a fully headless pipe), opening it for read fails — bail
+  # out with guidance instead of spinning on empty prompts.
+  if ! { : < /dev/tty; } 2>/dev/null; then
+    die "No terminal available for the interactive wizard. Re-run with --yes plus the needed flags (see --help)."
+  fi
+
   log "First-run setup wizard — press Enter to accept the [default] shown."
   log "(Pass flags + --yes to skip this and run non-interactively.)"
 

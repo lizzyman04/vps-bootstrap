@@ -121,6 +121,25 @@ valid_ssh_key() {
   esac
 }
 
+intro() {
+  # Short brief shown before the wizard and before any changes are made.
+  cat >&2 <<EOF
+$LOG_PREFIX =====================================================
+$LOG_PREFIX  VPS bootstrap
+$LOG_PREFIX =====================================================
+$LOG_PREFIX  This runs ON the target server — you must already be
+$LOG_PREFIX  connected to the VPS as root (or via sudo). It will:
+$LOG_PREFIX    - create an admin (sudo) user
+$LOG_PREFIX    - install your SSH public key for that user
+$LOG_PREFIX    - harden SSH: key-only auth, no direct root login
+$LOG_PREFIX    - configure a firewall (ufw/firewalld)
+$LOG_PREFIX    - install and configure fail2ban
+$LOG_PREFIX    - update the system packages
+$LOG_PREFIX  Nothing is changed until you confirm at the end.
+$LOG_PREFIX =====================================================
+EOF
+}
+
 # ---------------------------------------------------------------------------
 # Interactive wizard helpers
 #
@@ -239,6 +258,7 @@ done
 # Runs before pre-flight so the wizard can satisfy required values. Skipped
 # entirely when --yes is given.
 # ---------------------------------------------------------------------------
+intro
 run_wizard
 
 # ---------------------------------------------------------------------------

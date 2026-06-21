@@ -15,6 +15,33 @@ In one run, the script:
 - Installs and configures `fail2ban` to protect SSH from brute-force attempts.
 - Optionally installs Docker Engine.
 
+## Easiest path: just bought a VPS?
+
+Run `connect.sh` **from your own machine**. You enter the server IP, type the
+root password once **at SSH's own prompt**, and the server gets fully
+configured — no cloning, no copy-pasting commands on the server.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/lizzyman04/vps-bootstrap/main/connect.sh | bash
+```
+
+It asks for the server IP, the SSH username (default `root`), and optionally a
+local SSH **public** key to install for the new admin user. Then it opens an
+SSH session and runs `setup.sh` on the server for you.
+
+> **About the password:** `connect.sh` **never reads, stores, passes, or echoes
+> your server password.** There is no `sshpass` and no `expect`. You type the
+> password exactly once, at OpenSSH's own native prompt — the password is
+> handled entirely by SSH and never touches these scripts. (`connect.sh` runs
+> `ssh -t … 'curl … | sudo bash'`; the `-t` keeps the session interactive so
+> both the SSH password prompt and the `setup.sh` wizard work normally.)
+
+Don't have an SSH key yet? Generate one first:
+
+```bash
+ssh-keygen -t ed25519
+```
+
 ## Why the defensive design
 
 This script was written after a real setup that hit every common foot-gun.

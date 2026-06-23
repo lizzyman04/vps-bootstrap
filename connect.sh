@@ -259,8 +259,14 @@ log "Connecting... (enter the server password at SSH's prompt)"
 
 # Run the remote setup. Capture the exit code instead of exec'ing, so we can
 # offer the local SSH alias only if the setup actually succeeded.
+#
+# Redirect SSH's stdin from /dev/tty. Under `curl ... | bash`, this script's
+# stdin is the curl pipe (not a terminal), so a bare `ssh -t` would print
+# "Pseudo-terminal will not be allocated because stdin is not a terminal" and
+# the password prompt / remote wizard would fail. Reading from /dev/tty gives
+# SSH a real terminal for both the password prompt and setup.sh's wizard.
 set +e
-ssh -t "$SSH_USER@$SERVER_IP" "$REMOTE_CMD"
+ssh -t "$SSH_USER@$SERVER_IP" "$REMOTE_CMD" </dev/tty
 SSH_RC=$?
 set -e
 

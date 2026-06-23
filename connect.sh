@@ -246,7 +246,7 @@ cat >&2 <<EOF
 $LOG_PREFIX -----------------------------------------------------
 $LOG_PREFIX  About to:
 $LOG_PREFIX    connect : ssh -t $SSH_USER@$SERVER_IP
-$LOG_PREFIX    ssh key : ${PUBKEY_PATH:-none (you'll be asked on the server)}
+$LOG_PREFIX    ssh key : ${PUBKEY_PATH:-none (you will be asked on the server)}
 $LOG_PREFIX    then run: setup.sh (its wizard will ask for the rest)
 $LOG_PREFIX
 $LOG_PREFIX  You will be asked for the server password by SSH itself.
